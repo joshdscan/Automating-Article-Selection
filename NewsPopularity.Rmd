@@ -1,0 +1,405 @@
+---
+title: "NewsPopularity"
+author: "Joshua Scantlebury"
+date: "2023-10-27"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load neccessary libraries requried for all steps of this analysis
+```{r}
+library(tidyverse)
+library(dplyr)
+library(caTools)
+library(caret)
+library(Boruta)
+library(ggplot2)
+library(reshape2)
+library(modeest)
+library(randomForest)
+library(class)
+```
+
+Load in Data from csv file
+```{r}
+newsdf<-read_csv('OnlineNewsPopularity.csv')
+```
+
+Exploratory Data Analysis
+```{r}
+#Lets find out the size of our dataset, and data types
+str(newsdf)
+#Lets drop URL as it will have no use in this analysis
+newsdf <- subset(newsdf, select = -url)
+newsdf
+#Lets check and see if there are any missing values
+emptyobs<-sum(is.na(newsdf))
+emptyobs
+#What % oftimes can we find that shares had a value of over 1400
+sharecount <- (sum(newsdf$shares > 1000) / nrow(newsdf)) * 100
+sharecount
+#68.7 percent of the time we can find that articles were shared more than 1000 times
+#Compared to the profit line what is the average amount we can expect from an article (mean,median and mode)
+mean(newsdf$shares)
+median(newsdf$shares)
+mlv(newsdf$shares, method = "mfv")
+#since the share amount is right skewed it is worth noting that the median would be ideal to identify an average with this 
+#skewed distribution
+```
+Density plot of amount of shares per article (all)
+```{r}
+#It is hard to visualize the distribution so lets break it down to smaller trends and see how they fit into the big trend 
+ggplot(data = newsdf, aes(x = shares)) + 
+stat_density()
+
+#density plot of amount of shares per article (From 0-5000 shares + Line at 1000 shares <-profit line)
+ggplot(data = newsdf, aes(x = shares)) + 
+  stat_density() +
+  xlim(0, 5000) +
+  geom_vline(xintercept = 1000, linetype = "dotted", color = "red", size = 0.5, aes(label = "Profit Mark"))
+
+
+
+#density plot of amount of shares per article (From 5000-max(shares) shares)
+ggplot(data = newsdf, aes(x = shares)) + 
+stat_density()+
+xlim(5000,max(newsdf$shares))
+```
+Visualization of the distribution of all the possible features we may use in our model
+```{r}
+#Sourced:https://datacritics.com/2018/02/28/melt-your-data-for-fast-visuals-with-your-dataset-in-r/
+newsdfmelt1<-(newsdf[,0:15])
+newsdfmelt2<-(newsdf[,16:30])
+newsdfmelt3<-(newsdf[,31:45])
+newsdfmelt4<-(newsdf[,46:60])
+
+meltnewsdf1<-melt(newsdfmelt1)
+meltnewsdf2<-melt(newsdfmelt2)
+meltnewsdf3<-melt(newsdfmelt3)
+meltnewsdf4<-melt(newsdfmelt4)
+
+
+ggplot(data = meltnewsdf1, aes(x = value)) + 
+stat_density() + 
+facet_wrap(~variable, scales = "free")
+
+ggplot(data = meltnewsdf2, aes(x = value)) + 
+stat_density() + 
+facet_wrap(~variable, scales = "free")
+
+ggplot(data = meltnewsdf3, aes(x = value)) + 
+stat_density() + 
+facet_wrap(~variable, scales = "free")
+
+ggplot(data = meltnewsdf4, aes(x = value)) + 
+stat_density() + 
+facet_wrap(~variable, scales = "free")
+```
+Correlation Values
+```{r}
+corrnewsdf <-t(as.data.frame(cor(newsdf$shares, newsdf),"Correlation Values"))
+corrnewsdf <-round(corrnewsdf,4)
+corrnewsdf <-as.data.frame(corrnewsdf[order(-corrnewsdf), ])
+corrnewsdf
+#Top 13 features ("shares", "kw_avg_avg", "LDA_03", "kw_max_avg", "self_reference_avg_sharess",
+#"self_reference_min_shares", "self_reference_max_shares", "num_hrefs", "kw_avg_max",
+#"kw_min_avg num_imgs", "global_subjectivity", "kw_avg_min", "kw_max_min", "abs_title_sentiment_polarity",
+#"num_videos", "title_subjectivity", "num_keywords")
+```
+
+Data Cleaning
+```{r}
+workingdf <-newsdf
+workingdf <- subset(workingdf, select = -is_weekend)
+#We will convert the target variable into a bool as a value greater/equal to than the median will result in a 1 and less than the median will result in a 0
+workingdf$shares<-ifelse(workingdf$shares >= 1400, 1, 0)
+```
+
+Normalizing data for KNN 
+```{r}
+#We will drop the is_weekend column as we believe it is accounted for in the days of the week 
+workingdf2 <- newsdf
+workingdf2 <- subset(workingdf2, select = -is_weekend)
+#We will convert the target variable into a bool as a value greater/equal to than the median will result in a 1 and less than the median will result in a 0
+workingdf2$shares<-ifelse(workingdf2$shares >= 1400, 1, 0)
+#Normalization function
+normalize <- function(x) {
+return ((x - min(x)) / (max(x) - min(x))) }
+workingdf2normalized <- as.data.frame(lapply(workingdf2[,1:59], normalize))
+workingdf2normalized$shares <- workingdf2$shares
+```
+
+Normalizing data for KNN with Boruta Non Rejected (Boruta explained in the following lines of code)
+```{r}
+#We will drop the is_weekend column as we believe it is accounted for in the days of the week 
+workingdf3 <- newsdf[, c(
+  "timedelta", "n_tokens_title", "n_tokens_content",
+  "n_unique_tokens", "n_non_stop_words", "n_non_stop_unique_tokens",
+  "num_hrefs", "num_self_hrefs", "num_imgs", "num_videos",
+  "average_token_length", "num_keywords", "data_channel_is_entertainment",
+  "data_channel_is_bus", "data_channel_is_socmed", "data_channel_is_tech",
+  "data_channel_is_world", "kw_min_min", "kw_max_min", "kw_avg_min",
+  "kw_min_max", "kw_max_max", "kw_avg_max", "kw_min_avg", "kw_max_avg",
+  "kw_avg_avg", "self_reference_min_shares", "self_reference_max_shares",
+  "self_reference_avg_sharess", "weekday_is_saturday", "weekday_is_sunday",
+  "LDA_00", "LDA_01", "LDA_02", "LDA_03", "LDA_04",
+  "global_subjectivity", "global_sentiment_polarity",
+  "global_rate_positive_words", "global_rate_negative_words",
+  "rate_positive_words", "rate_negative_words",
+  "avg_positive_polarity", "min_positive_polarity", "max_positive_polarity",
+  "avg_negative_polarity", "min_negative_polarity", "max_negative_polarity",
+  "title_subjectivity", "title_sentiment_polarity",
+  "abs_title_subjectivity", "abs_title_sentiment_polarity","shares"
+)]
+
+#We will convert the target variable into a bool as a value greater/equal to than the median will result in a 1 and less than the median will result in a 0
+workingdf3$shares<-ifelse(workingdf3$shares >= 1400, 1, 0)
+
+#Normalization function
+normalize <- function(x) {
+return ((x - min(x)) / (max(x) - min(x))) }
+workingdf3normalized <- as.data.frame(lapply(workingdf3[,1:52], normalize))
+workingdf3normalized$shares <- workingdf3$shares
+```
+
+Feature Selection
+
+Using Boruta method for feature selection
+(This was knit in a seperate file hence why the code is commented out. Trying to run code with this will take around 30 minutes + to process)
+```{r}
+#Due to computational limitations, only 60 runs were performed
+#boruta <- Boruta(workingdf$shares ~ ., data = workingdf, doTrace = 2, maxRuns = 60)
+```
+
+Ploting the boruta derived importance for each feature
+```{r}
+#plot(boruta, las = 2, cex.axis = 0.7)
+#plotImpHistory(boruta)
+```
+
+Boruta rough fix of accepted features
+```{r}
+#bor <- TentativeRoughFix(boruta)
+#print(bor)
+#attStats(boruta)
+```
+
+Data Partition
+
+Data Partition for rf models
+```{r}
+set.seed(23)
+trainingdata <- workingdf$shares %>% 
+  createDataPartition(p = 0.7, list = FALSE)
+
+traindata  <- workingdf[trainingdata, ]
+testdata <- workingdf[-trainingdata, ]
+```
+
+Data Partition for normalized data
+```{r} 
+set.seed(123)
+trainingdata2 <- sample(1:nrow(workingdf2normalized),size=nrow(workingdf2normalized)*0.7,replace = FALSE)
+ 
+traindata2 <- workingdf2[trainingdata2,]
+testdata2 <- workingdf2[-trainingdata2,] 
+
+traindata2shares <- workingdf2[trainingdata2,59]
+testdata2shares <-workingdf2[-trainingdata2,59]
+
+```
+
+Data Partition for normalized data with boruta feature selection
+```{r} 
+set.seed(123)
+trainingdata3 <- sample(1:nrow(workingdf3normalized),size=nrow(workingdf3normalized)*0.7,replace = FALSE)
+ 
+traindata3 <- workingdf3[trainingdata3,]
+testdata3 <- workingdf3[-trainingdata3,] 
+
+traindata3shares <- workingdf3[trainingdata3,53]
+testdata3shares <-workingdf3[-trainingdata3,53]
+
+```
+
+
+Modelling & Optimization
+
+rf model using all variables
+```{r} 
+set.seed(333)  
+traindata$shares<-as.factor(traindata$shares)
+testdata$shares<-as.factor(testdata$shares)
+targetsall<-subset(traindata, select = -shares)
+randomforestallvariables<- randomForest(traindata$shares~., data = traindata) 
+randomforestallvariables
+
+#importance(randomforestallvariables, type=2)
+#Another method of feature selection that ultimately was not used in favor of Boruta
+```
+
+Model Evaluation using confusion matrix
+```{r} 
+prediction1 <- predict(randomforestallvariables, testdata)
+confusionMatrix(prediction1, testdata$shares)
+```
+
+rf model using non rejected features via boruta 
+```{r} 
+#getNonRejectedFormula(boruta)
+set.seed(333) 
+
+nonrejectedrandomforest<- randomForest(traindata$shares~timedelta + n_tokens_title + n_tokens_content + 
+    n_unique_tokens + n_non_stop_words + n_non_stop_unique_tokens + 
+    num_hrefs + num_self_hrefs + num_imgs + num_videos + average_token_length + 
+    num_keywords + data_channel_is_entertainment + data_channel_is_bus + 
+    data_channel_is_socmed + data_channel_is_tech + data_channel_is_world + 
+    kw_min_min + kw_max_min + kw_avg_min + kw_min_max + kw_max_max + 
+    kw_avg_max + kw_min_avg + kw_max_avg + kw_avg_avg + self_reference_min_shares + 
+    self_reference_max_shares + self_reference_avg_sharess + 
+    weekday_is_saturday + weekday_is_sunday + LDA_00 + LDA_01 + 
+    LDA_02 + LDA_03 + LDA_04 + global_subjectivity + global_sentiment_polarity + 
+    global_rate_positive_words + global_rate_negative_words + 
+    rate_positive_words + rate_negative_words + avg_positive_polarity + 
+    min_positive_polarity + max_positive_polarity + avg_negative_polarity + 
+    min_negative_polarity + max_negative_polarity + title_subjectivity + 
+    title_sentiment_polarity + abs_title_subjectivity + abs_title_sentiment_polarity, data = traindata) 
+nonrejectedrandomforest
+```
+
+Model Evaluation using confusion matrix
+```{r} 
+prediction2 <- predict(nonrejectedrandomforest, testdata)
+confusionMatrix(prediction2, testdata$shares)
+```
+
+rf model using confirmed importance features via boruta 
+```{r} 
+#getConfirmedFormula(boruta)
+set.seed(333) 
+confirmedvariablesrandomforest<- randomForest(traindata$shares~timedelta + n_tokens_content + n_unique_tokens + 
+    n_non_stop_words + n_non_stop_unique_tokens + num_hrefs + 
+    num_self_hrefs + num_imgs + num_videos + average_token_length + 
+    num_keywords + data_channel_is_entertainment + data_channel_is_socmed + 
+    data_channel_is_tech + data_channel_is_world + kw_min_min + 
+    kw_max_min + kw_avg_min + kw_min_max + kw_max_max + kw_avg_max + 
+    kw_min_avg + kw_max_avg + kw_avg_avg + self_reference_min_shares + 
+    self_reference_max_shares + self_reference_avg_sharess + 
+    weekday_is_saturday + weekday_is_sunday + LDA_00 + LDA_01 + 
+    LDA_02 + LDA_03 + LDA_04 + global_subjectivity + global_sentiment_polarity + 
+    global_rate_positive_words + global_rate_negative_words + 
+    rate_positive_words + rate_negative_words + avg_positive_polarity + 
+    min_positive_polarity + max_positive_polarity + avg_negative_polarity + 
+    min_negative_polarity + max_negative_polarity + title_subjectivity + 
+    title_sentiment_polarity + abs_title_sentiment_polarity, data = traindata) 
+confirmedvariablesrandomforest
+```
+
+Model Evaluation using confusion matrix
+```{r} 
+prediction3 <- predict(confirmedvariablesrandomforest, testdata)
+confusionMatrix(prediction3, testdata$shares)
+```
+
+KNN without Boruta feature selection
+```{r} 
+#k selection with sqrt of total obs
+print(sqrt(39644))
+
+# We will use a range of -/+ 10 our estimated optimal k value to determine the best fit
+kvalues <- 189:209
+koptimal <- numeric(length(kvalues)) 
+
+# Loop over the k values
+for (i in 1:length(kvalues)) {
+  k <- kvalues[i] 
+
+# Train a KNN model with the current k
+  knnmodel <- knn(train = traindata2, test = testdata2, cl = traindata2shares$shares, k = k)
+  
+# Calculate and store the accuracy of the model on the test dataset
+  accuracy <- 100 * sum(testdata2shares$shares == knnmodel) / NROW(testdata2)
+  koptimal[i] <- accuracy
+
+# Print the results for each k
+  cat("k =", k, "Accuracy =", accuracy, "\n")
+}
+cat("k=199 yields highest accuracy at 58.3%")
+
+#Evaluate model performance 
+
+knnmodel1 <- knn(train = traindata2, test = testdata2, cl = traindata2shares$shares, k = 199)
+recallknn1 <- sum(knnmodel1 == testdata2shares$shares & testdata2shares$shares == 1) / sum(testdata2shares$shares == 1)
+recallknn1
+
+specificityknn1 <- sum(knnmodel1 == testdata2shares$shares & testdata2shares$shares == 0) / sum(testdata2shares$shares == 0)
+specificityknn1
+
+
+```
+
+KNN with Boruta Feature Selection 
+```{r} 
+
+#k selection with sqrt of total obs
+print(sqrt(39644))
+
+# We will use a range of -/+ 10 our estimated optimal k value to determine the best fit
+kvalues <- 189:209
+koptimal <- numeric(length(kvalues)) 
+
+# Loop over the range of selected k values
+for (i in 1:length(kvalues)) {
+  k <- kvalues[i] 
+
+# Train a KNN model with the current k
+  knnmodel <- knn(train = traindata3, test = testdata3, cl = traindata3shares$shares, k = k)
+  
+# Calculate and store the accuracy of the model on the test dataset
+  accuracy <- 100 * sum(testdata3shares$shares == knnmodel) / NROW(testdata3)
+  koptimal[i] <- accuracy
+
+# Print the results for each k
+  cat("k =", k, "Accuracy =", accuracy, "\n")
+}
+cat("k=199 yields highest accuracy at 58.2%")
+
+#Evaluate model performance 
+
+knnmodel2 <- knn(train = traindata3, test = testdata3, cl = traindata3shares$shares, k = 199)
+
+recallknn2 <- sum(knnmodel2 == testdata3shares$shares & testdata3shares$shares == 1) / sum(testdata3shares$shares == 1)
+
+recallknn2
+specificityknn2 <- sum(knnmodel2 == testdata3shares$shares & testdata3shares$shares == 0) / sum(testdata3shares$shares == 0)
+
+specificityknn2
+```
+
+Benchmarking the performance of all models
+```{r}
+#Generating a df that will share the findings from each models performance 
+model_performance <- data.frame(
+  Model = c(
+    "Random Forest All Variables",
+    "Random Forest Boruta Non-Rejected Variables",
+    "Random Forest Boruta Accepted Variables",
+    "KNN Model 1 All Variables",
+    "KNN Model 2 Boruta Accepted Variables"
+  ),
+  Accuracy = round(c(0.6636, 0.666, 0.666, 58.3, 58.2) * 100, 2),
+  Recall = round(c(0.5872, 0.5911, 0.5900, 0.6385788, 0.638736) * 100, 2),
+  Specificity = round(c(0.7325, 0.7336, 0.7346, 0.517983, 0.517983) * 100, 2)
+)
+model_performance
+```
+
+
+
+
+
