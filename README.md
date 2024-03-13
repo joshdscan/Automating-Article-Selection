@@ -20,8 +20,4 @@ The Random Forest model is recommended for deployment, predicting articles to co
 
 This project underscores the potential of machine learning in streamlining media operations, specifically in maximizing the profitability of article selections. Future optimizations may include exploring additional algorithms or adjusting the share threshold to improve prediction accuracy.
 
-## References
-
-- Impacts of classification importance, Feature Selection using Boruta, Visuals of variable distribution, Usage of Boruta in KNN, Usage of KNN, and various resources including OpenAI's ChatGPT and Stack Overflow for bug fixing and help with visualizations.
-
 ---
