@@ -2,7 +2,7 @@
 
 ## Overview
 
-In this project for MGTA 601, I aimed to automate the article selection process for JS Media, targeting articles likely to garner over 1000 shares. This threshold is significant as articles with shares exceeding 1000 bring in considerably higher profits, yet each channel can only feature 12 such articles at a time.
+In this project, I aimed to automate the article selection process for JS Media, targeting articles likely to garner over 1000 shares. This threshold is significant as articles with shares exceeding 1000 bring in considerably higher profits, yet each channel can only feature 12 such articles at a time.
 
 ## Data
 
