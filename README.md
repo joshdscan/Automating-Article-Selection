@@ -1,4 +1,4 @@
-# Automating Article Selection with Margin Insight
+# Automating Article Selection
 
 ## Overview
 
